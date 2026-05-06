@@ -93,7 +93,7 @@ class BattleMetricsBot(commands.Bot):
                     except (ValueError, TypeError):
                         time_str = "N/A"
 
-                    player_line = f"[ {idx} | {player_name} | {player_id} | {time_str} ]"
+                    player_line = f"[ {idx} | {player_name} | {time_str} ]"
                     player_lines.append(player_line)
                 except Exception as e:
                     print(f"Error processing player {idx}: {e}")
