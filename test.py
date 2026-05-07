@@ -10,7 +10,7 @@ load_dotenv()
 
 ENV_FILE     = '.env'
 SERVERS_FILE = 'servers.json'
-COLORS_FILE  = 'colors.json'   # { "PlayerName": "red", ... }
+COLORS_FILE  = 'colors.json'   # { "PlayerName": {"color": "red", "note": "..."} }
 
 DISCORD_TOKEN  = os.getenv('DISCORD_TOKEN')
 CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '5'))
@@ -48,10 +48,20 @@ def save_servers(servers: dict):
         json.dump(servers, f, indent=2)
 
 def load_colors() -> dict:
-    if os.path.exists(COLORS_FILE):
-        with open(COLORS_FILE, 'r') as f:
-            return json.load(f)
-    return {}
+    """Load colors.json, migrating old {"name": "color"} entries to {"name": {"color":..., "note":""}}."""
+    if not os.path.exists(COLORS_FILE):
+        return {}
+    with open(COLORS_FILE, 'r') as f:
+        raw = json.load(f)
+    # Migrate any legacy string values
+    migrated = False
+    for k, v in raw.items():
+        if isinstance(v, str):
+            raw[k] = {'color': v, 'note': ''}
+            migrated = True
+    if migrated:
+        save_colors(raw)
+    return raw
 
 def save_colors(colors: dict):
     with open(COLORS_FILE, 'w') as f:
@@ -149,9 +159,12 @@ class ConfigCog(commands.Cog):
                 f'Available: {", ".join(COLOR_NAMES)}```'
             )
             return
-        self.bot.colors[player_name] = color
+        entry = self.bot.colors.get(player_name, {'color': color, 'note': ''})
+        entry['color'] = color
+        self.bot.colors[player_name] = entry
         save_colors(self.bot.colors)
-        await ctx.send(f'```✅ "{player_name}" will now appear in {color}.```')
+        note_hint = f'  (note: {entry["note"]})' if entry.get('note') else ''
+        await ctx.send(f'```✅ "{player_name}" will now appear in {color}.{note_hint}```')
 
     @commands.command(name='uncolorname')
     async def uncolor_name(self, ctx, *, player_name: str):
@@ -165,7 +178,7 @@ class ConfigCog(commands.Cog):
             return
         del self.bot.colors[player_name]
         save_colors(self.bot.colors)
-        await ctx.send(f'```✅ Color removed from "{player_name}".```')
+        await ctx.send(f'```✅ Color and note removed from "{player_name}".```')
 
     @commands.command(name='listcolors')
     async def list_colors(self, ctx):
@@ -176,11 +189,55 @@ class ConfigCog(commands.Cog):
         if not self.bot.colors:
             await ctx.send('```ℹ️ No colored names set. Use !colorname <color> <name>.```')
             return
-        lines = [f"{'─'*36}", ' Colored names', f"{'─'*36}"]
-        for name, color in sorted(self.bot.colors.items()):
-            lines.append(f' {color:<8}  {name}')
-        lines.append(f"{'─'*36}")
+        lines = [f"{'─'*48}", ' Colored names', f"{'─'*48}"]
+        for name, entry in sorted(self.bot.colors.items()):
+            if isinstance(entry, str):
+                entry = {'color': entry, 'note': ''}
+            color    = entry.get('color', '?')
+            note     = entry.get('note', '')
+            note_str = f'  ← {note}' if note else ''
+            lines.append(f' {color:<8}  {name}{note_str}')
+        lines.append(f"{'─'*48}")
         await ctx.send('```' + '\n'.join(lines) + '```')
+
+
+    @commands.command(name='setnote')
+    async def set_note(self, ctx, player_name: str, *, note: str):
+        """Add or update a note for a colored player name.
+        Usage: !setnote SomePlayer known griefer, watch out"""
+        if not self._is_admin(ctx.author.id):
+            await ctx.send('```⛔ No permission.```')
+            return
+        if player_name not in self.bot.colors:
+            await ctx.send(
+                f'```⚠️ "{player_name}" has no color entry.\n'
+                f'Use !colorname <color> {player_name} first.```'
+            )
+            return
+        entry = self.bot.colors[player_name]
+        if isinstance(entry, str):
+            entry = {'color': entry, 'note': ''}
+        entry['note'] = note
+        self.bot.colors[player_name] = entry
+        save_colors(self.bot.colors)
+        await ctx.send(f'```✅ Note set for "{player_name}": {note}```')
+
+    @commands.command(name='removenote')
+    async def remove_note(self, ctx, *, player_name: str):
+        """Remove the note from a colored player name (keeps the color).
+        Usage: !removenote SomePlayer"""
+        if not self._is_admin(ctx.author.id):
+            await ctx.send('```⛔ No permission.```')
+            return
+        if player_name not in self.bot.colors:
+            await ctx.send(f'```⚠️ "{player_name}" not found.```')
+            return
+        entry = self.bot.colors[player_name]
+        if isinstance(entry, dict):
+            entry['note'] = ''
+            self.bot.colors[player_name] = entry
+            save_colors(self.bot.colors)
+        await ctx.send(f'```✅ Note removed from "{player_name}".```')
 
     # ── Other ────────────────────────────────────────────────────────────────
 
@@ -257,8 +314,10 @@ class ConfigCog(commands.Cog):
             f" !removeserver <id>           Remove a server\n"
             f" !listservers                 List all servers\n"
             f" !colorname <color> <name>    Color a player name\n"
-            f" !uncolorname <name>          Remove a color\n"
-            f" !listcolors                  List all colored names\n"
+            f" !uncolorname <name>          Remove color + note\n"
+            f" !setnote <name> <note>       Add/update a note\n"
+            f" !removenote <name>           Remove note (keep color)\n"
+            f" !listcolors                  List names, colors & notes\n"
             f" !status [id]                 Force update (all/one)\n"
             f" !setinterval <mins>          Poll interval (1-60)\n"
             f" !addadmin / !removeadmin     Admin management\n"
@@ -310,12 +369,20 @@ class BattleMetricsBot(commands.Bot):
 
     # ── Formatting ───────────────────────────────────────────────────────────
 
-    def _apply_color(self, name: str) -> str:
-        """Wrap a name in ANSI escape codes if it has a color assigned."""
-        color_key = self.colors.get(name)
-        if color_key and color_key in ANSI_COLORS:
-            return f'{ANSI_COLORS[color_key]}{name}{ANSI_RESET}'
-        return name
+    def _apply_color(self, name: str) -> tuple[str, str]:
+        """Return (display_name_with_ansi, note) for a player name."""
+        entry = self.colors.get(name)
+        if not entry:
+            return name, ''
+        if isinstance(entry, str):          # legacy fallback
+            entry = {'color': entry, 'note': ''}
+        color_key = entry.get('color', '')
+        note      = entry.get('note', '')
+        if color_key in ANSI_COLORS:
+            display = f'{ANSI_COLORS[color_key]}{name}{ANSI_RESET}'
+        else:
+            display = name
+        return display, note
 
     def format_server_message(self, data) -> str:
         try:
@@ -342,8 +409,9 @@ class BattleMetricsBot(commands.Bot):
                             break
                     h, m = secs // 3600, (secs % 3600) // 60
                     t = f'{h}h {m}m' if h else f'{m}m'
-                    colored_name = self._apply_color(pname)
-                    lines.append(f'[ {idx} | {colored_name} | {t} ]')
+                    colored_name, note = self._apply_color(pname)
+                    note_str = f'  ← {note}' if note else ''
+                    lines.append(f'[ {idx} | {colored_name} | {t} ]{note_str}')
                 except Exception as e:
                     print(f'Player parse error: {e}')
 

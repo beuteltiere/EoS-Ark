@@ -1,7 +1,30 @@
 {
-  "SoT Main": "green",
-  "\u25a1\u25a1\u25a1\u25a1\u25a1\u25a1\u25a1\u25a1": "green",
-  "gepowe": "blue",
-  "lol": "red",
-  "6M Kills": "blue"
+  "SoT Main": {
+    "color": "green",
+    "note": "Vincent"
+  },
+  "\u25a1\u25a1\u25a1\u25a1\u25a1\u25a1\u25a1\u25a1": {
+    "color": "green",
+    "note": "Bombe"
+  },
+  "gepowe": {
+    "color": "blue",
+    "note": "Tim / Render Issues"
+  },
+  "lol": {
+    "color": "red",
+    "note": "Abbe Carbo / The North Remembers"
+  },
+  "6M Kills": {
+    "color": "blue",
+    "note": "Marcel / Render Issues"
+  },
+  "karpador": {
+    "color": "blue",
+    "note": "Sandwhich (loser) / Render Issues"
+  },
+  "Sama": {
+    "color": "blue",
+    "note": "Sama / Render Issues"
+  }
 }
