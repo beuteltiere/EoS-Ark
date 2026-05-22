@@ -338,6 +338,7 @@ class BattleMetricsBot(commands.Bot):
         self.servers: dict   = load_servers()
         self.colors: dict    = load_colors()    # { "PlayerName": "red" }
         self.player_state: dict = {}
+        self.last_content: dict  = {}   # skip edits when content unchanged
 
     async def setup_hook(self):
         await self.add_cog(ConfigCog(self))
@@ -384,7 +385,10 @@ class BattleMetricsBot(commands.Bot):
             display = name
         return display, note
 
-    def format_server_message(self, data) -> str:
+    def format_server_message(self, data) -> tuple[str, str]:
+        """Return (full_discord_content, body_without_timestamp).
+        The body key is used to detect real changes so we skip edits when
+        only the clock ticked but nothing else changed."""
         try:
             attrs        = data['data']['attributes']
             name         = attrs.get('name', 'Unknown')
@@ -416,9 +420,10 @@ class BattleMetricsBot(commands.Bot):
                     print(f'Player parse error: {e}')
 
             body = '\n'.join(lines) if lines else 'No players online'
+            # change_key excludes the timestamp so we can diff without false positives
+            change_key = f'{name}|{status}|{player_count}/{max_players}|{body}'
 
-            # Use ```ansi so Discord renders the ANSI escape codes as colours
-            return (
+            content = (
                 f'```ansi\n'
                 f'Server:  {name}\n'
                 f'Status:  {status}\n'
@@ -426,9 +431,11 @@ class BattleMetricsBot(commands.Bot):
                 f'Updated: {updated}\n\n'
                 f'{body}\n```'
             )
+            return content, change_key
         except Exception as e:
             print(f'Format error: {e}')
-            return f'```Error formatting data: {e}```'
+            err = f'```Error formatting data: {e}```'
+            return err, err
 
     # ── Update one server ─────────────────────────────────────────────────────
 
@@ -462,13 +469,19 @@ class BattleMetricsBot(commands.Bot):
             print(f'[{server_id}] Channel {cfg["channel_id"]} not found')
             return
 
-        content = self.format_server_message(data)
+        content, change_key = self.format_server_message(data)
 
-        # Edit existing message, or send a new one if it's gone
+        # ── Skip the Discord API call when nothing real changed ───────────────
+        if self.last_content.get(server_id) == change_key:
+            print(f'[{server_id}] No changes — skipping edit')
+            return
+        self.last_content[server_id] = change_key
+
+        # Edit existing message using a lightweight partial (no extra GET).
+        # Falls through to send() only if the message no longer exists.
         if cfg.get('message_id'):
             try:
-                msg = await channel.fetch_message(cfg['message_id'])
-                await msg.edit(content=content)
+                await channel.get_partial_message(cfg['message_id']).edit(content=content)
                 return
             except discord.NotFound:
                 print(f'[{server_id}] Message gone — sending a new one')
@@ -484,14 +497,20 @@ class BattleMetricsBot(commands.Bot):
 
     @tasks.loop(minutes=5)
     async def monitor_loop(self):
-        for server_id in list(self.servers.keys()):
+        import asyncio
+        servers = list(self.servers.keys())
+        print(f'Poll cycle: {len(servers)} server(s)')
+        for server_id in servers:
             await self.update_server(server_id)
+            await asyncio.sleep(3)   # 3 s stagger: 13 servers = ~39 s total, well within 5 min
 
     @monitor_loop.before_loop
     async def before_monitor(self):
+        import asyncio
         await self.wait_until_ready()
-        print(f'Starting monitor for {len(self.servers)} server(s)...')
-        for server_id in list(self.servers.keys()):
+        servers = list(self.servers.keys())
+        print(f'Starting monitor for {len(servers)} server(s)...')
+        for server_id in servers:
             data = await self.fetch_server_data(server_id)
             if data:
                 players = [
@@ -502,6 +521,7 @@ class BattleMetricsBot(commands.Bot):
                     p.get('id') for p in players if p.get('id')
                 }
                 await self.update_server(server_id)
+            await asyncio.sleep(3)   # stagger startup edits same as the main loop
 
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
